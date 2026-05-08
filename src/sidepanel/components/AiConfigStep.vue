@@ -1,0 +1,106 @@
+<script setup lang="ts">
+import { ref, computed, inject } from 'vue'
+import type { AiConfig } from '@/shared/types'
+import type { TaskStateContext } from '../composables/useTaskState'
+
+const taskCtx = inject<TaskStateContext>('taskCtx')!
+
+const testResult = ref<{ success: boolean; message: string } | null>(null)
+const testing = ref(false)
+
+const form = ref<AiConfig>({
+  baseUrl: taskCtx?.task.aiConfig.baseUrl || 'https://api.openai.com/v1',
+  apiKey: taskCtx?.task.aiConfig.apiKey || '',
+  modelName: taskCtx?.task.aiConfig.modelName || 'gpt-4o',
+})
+
+const isValid = computed(() => {
+  return form.value.baseUrl.trim() && form.value.apiKey.trim() && form.value.modelName.trim()
+})
+
+async function handleTest() {
+  if (!isValid.value || !taskCtx) return
+  testing.value = true
+  testResult.value = null
+  try {
+    testResult.value = await taskCtx.testConnection(form.value, '<div class="item"><span class="title">Test</span><span class="price">$10</span></div>')
+  } catch (e: any) {
+    testResult.value = { success: false, message: e.message || '未知错误' }
+  } finally {
+    testing.value = false
+  }
+}
+
+function handleSaveAndNext() {
+  if (!isValid.value || !taskCtx) return
+  taskCtx.saveAiConfig({ ...form.value })
+  taskCtx.currentStep.index = 2
+}
+</script>
+
+<template>
+  <div class="space-y-4">
+    <div class="text-center">
+      <h2 class="text-lg font-bold text-gray-800">配置 AI 连接</h2>
+      <p class="text-xs text-gray-500 mt-1">支持任何兼容 OpenAI API 的服务（全局配置，一次设定）</p>
+    </div>
+
+    <div class="space-y-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Base URL</label>
+        <input
+          v-model="form.baseUrl"
+          type="text"
+          placeholder="https://api.openai.com/v1"
+          class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition"
+        />
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">API Key</label>
+        <input
+          v-model="form.apiKey"
+          type="password"
+          placeholder="sk-..."
+          class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition"
+        />
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Model Name</label>
+        <input
+          v-model="form.modelName"
+          type="text"
+          placeholder="gpt-4o"
+          class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition"
+        />
+      </div>
+    </div>
+
+    <!-- Test Result -->
+    <div
+      v-if="testResult"
+      class="text-xs px-3 py-2 rounded-lg"
+      :class="testResult.success ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'"
+    >
+      {{ testResult.message }}
+    </div>
+
+    <div class="flex gap-2">
+      <button
+        @click="handleTest"
+        :disabled="!isValid || testing"
+        class="flex-1 px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition"
+      >
+        {{ testing ? '测试中...' : '测试连接' }}
+      </button>
+      <button
+        @click="handleSaveAndNext"
+        :disabled="!isValid"
+        class="flex-1 px-4 py-2 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
+      >
+        保存并继续
+      </button>
+    </div>
+  </div>
+</template>
