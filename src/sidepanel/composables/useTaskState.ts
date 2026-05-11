@@ -1,14 +1,7 @@
-import { reactive, computed, ref, type Ref } from 'vue'
-import type {
-  TaskState,
-  AiConfig,
-  FieldDefinition,
-  PaginationConfig,
-  ScrapedRow,
-  ParseTemplate,
-} from '@/shared/types'
-import { MessageType } from '@/shared/messages'
-import { useChromeMessage } from './useChromeMessage'
+import {computed, reactive, ref} from 'vue'
+import type {AiConfig, FieldDefinition, PaginationConfig, ParseTemplate, ScrapedRow, TaskState,} from '@/shared/types'
+import {MessageType} from '@/shared/messages'
+import {useChromeMessage} from './useChromeMessage'
 
 function createEmptyTask(targetUrl = ''): TaskState {
   return {
@@ -37,6 +30,10 @@ export function useTaskState() {
   const previewRows = reactive<ScrapedRow[]>([])
   const aiConfigLoaded = ref(false)
 
+  // Domain template prompt
+  const showTemplatePrompt = ref(false)
+  const matchedTemplates = ref<ParseTemplate[]>([])
+
   // Analyzed fields storage (used by step 2→3 flow)
   const analyzedFields = ref<FieldDefinition[]>([])
   const analyzedItemSelector = ref('')
@@ -53,9 +50,10 @@ export function useTaskState() {
     if (stored && stored.baseUrl && stored.apiKey) {
       task.aiConfig = stored
       aiConfigLoaded.value = true
-      // If config already saved, skip to step 2 (element selection)
-      currentStep.index = 2
+      // AI config is now independent from the workflow
     }
+    // Check domain template after config is loaded (fire and forget)
+    checkDomainTemplate().catch(e => console.error('checkDomainTemplate failed:', e))
   }
 
   // --- Incoming message handlers ---
@@ -141,7 +139,7 @@ export function useTaskState() {
   }
 
   function goToFieldConfirm() {
-    currentStep.index = 3
+    currentStep.index = 2
   }
 
   async function confirmFields(
@@ -150,14 +148,13 @@ export function useTaskState() {
     itemSelector: string
   ) {
     task.selectorConfig = { containerSelector, itemSelector, fields }
-    currentStep.index = 4
+    currentStep.index = 3
   }
 
   async function detectPagination() {
-    const result = await send<{
+    return await send<{
       candidates: Array<{ selector: string; text: string; type: string; confidence: number }>
     }>(MessageType.DETECT_PAGINATION, {})
-    return result
   }
 
   async function startScraping(paginationConfig: PaginationConfig) {
@@ -191,6 +188,7 @@ export function useTaskState() {
   async function exportCsv(): Promise<void> {
     const { exportToCsv } = await import('@/db/index')
     const csv = await exportToCsv(task.id)
+    if (!csv) return
     await send(MessageType.EXPORT_CSV, {
       data: csv,
       filename: `${task.name || 'crawler-export'}-${Date.now()}.csv`,
@@ -199,7 +197,14 @@ export function useTaskState() {
 
   async function saveTemplate(): Promise<void> {
     if (!task.selectorConfig) return
-    const url = new URL(task.targetUrl)
+    // Fallback: use current tab URL if task.targetUrl is not set
+    let rawUrl = task.targetUrl
+    if (!rawUrl) {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      rawUrl = tab?.url || ''
+    }
+    if (!rawUrl) return
+    const url = new URL(rawUrl)
     const template: ParseTemplate = {
       id: `tpl-${Date.now()}`,
       domain: url.hostname,
@@ -217,9 +222,52 @@ export function useTaskState() {
     return send(MessageType.LOAD_TEMPLATES, {})
   }
 
+  // --- Domain Template Check ---
+  async function checkDomainTemplate() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      if (!tab?.url || !/^https?:\/\//i.test(tab.url)) return
+
+      const domain = new URL(tab.url).hostname
+      const templates = await loadTemplates()
+      const matched = templates.filter(t => t.domain === domain)
+
+      if (matched.length > 0) {
+        matchedTemplates.value = matched
+        showTemplatePrompt.value = true
+      }
+    } catch (e) {
+      console.error('Failed to check domain template:', e)
+    }
+  }
+
+  async function loadTemplate(template: ParseTemplate) {
+    if (!template) {
+      console.error('loadTemplate called with undefined/null template')
+      return
+    }
+    task.selectorConfig = {
+      containerSelector: template.containerSelector,
+      itemSelector: template.itemSelector,
+      fields: template.fields,
+    }
+    task.targetUrl = (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.url || ''
+    currentStep.index = 3
+    showTemplatePrompt.value = false
+
+    // Update lastUsedAt and save
+    template.lastUsedAt = Date.now()
+    await send(MessageType.SAVE_TEMPLATE, template)
+  }
+
+  function dismissTemplatePrompt() {
+    showTemplatePrompt.value = false
+    matchedTemplates.value = []
+  }
+
   function resetTask() {
     Object.assign(task, createEmptyTask())
-    currentStep.index = aiConfigLoaded.value ? 2 : 1
+    currentStep.index = 1
     previewRows.splice(0)
     analyzedFields.value = []
     analyzedItemSelector.value = ''
@@ -230,6 +278,8 @@ export function useTaskState() {
     currentStep,
     previewRows,
     aiConfigLoaded,
+    showTemplatePrompt,
+    matchedTemplates,
     analyzedFields,
     analyzedItemSelector,
     isRunning,
@@ -250,6 +300,9 @@ export function useTaskState() {
     exportCsv,
     saveTemplate,
     loadTemplates,
+    checkDomainTemplate,
+    loadTemplate,
+    dismissTemplatePrompt,
     resetTask,
   }
 }

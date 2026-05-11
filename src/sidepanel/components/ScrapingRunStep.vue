@@ -50,6 +50,15 @@ const previewHeaders = computed(() => {
   return Object.keys(props.previewRows[0].data)
 })
 
+const isActive = computed(() => props.isRunning || props.isPaused)
+
+const progressPercent = computed(() => {
+  const total = props.task.maxPages || 50
+  if (props.task.status === 'completed') return 100
+  if (!isActive.value && props.task.currentPage === 0) return 0
+  return Math.min(100, Math.round((props.task.currentPage / total) * 100))
+})
+
 function getStatusBadge() {
   if (props.isRunning) return { text: '采集中', class: 'bg-blue-100 text-blue-700' }
   if (props.isPaused) return { text: '已暂停', class: 'bg-yellow-100 text-yellow-700' }
@@ -68,6 +77,17 @@ function getStatusBadge() {
         <span class="text-xs px-2 py-0.5 rounded-full font-medium" :class="getStatusBadge().class">
           {{ getStatusBadge().text }}
         </span>
+      </div>
+      <!-- Live counter -->
+      <div
+        v-if="isActive || task.totalItems > 0"
+        class="mt-2 py-2 px-4 bg-blue-50 border border-blue-200 rounded-lg inline-block"
+      >
+        <span class="text-xs text-blue-600">已采集</span>
+        <span class="text-xl font-bold text-blue-700 mx-1 tabular-nums">
+          {{ task.totalItems.toLocaleString() }}
+        </span>
+        <span class="text-xs text-blue-600">条</span>
       </div>
     </div>
 
@@ -153,11 +173,11 @@ function getStatusBadge() {
         ⏹ 停止
       </button>
       <button
-        v-if="task.totalItems > 0"
         @click="emit('export')"
         class="px-4 py-2.5 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700 transition"
       >
         📥 导出 CSV
+        <span v-if="task.totalItems > 0" class="ml-1 opacity-80">({{ task.totalItems }} 条)</span>
       </button>
       <button
         @click="emit('save-template')"
@@ -169,20 +189,27 @@ function getStatusBadge() {
     </div>
 
     <!-- Progress -->
-    <div v-if="task.totalItems > 0" class="bg-gray-100 rounded-lg p-3 space-y-1">
+    <div v-if="isActive || task.totalItems > 0" class="bg-gray-100 rounded-lg p-3 space-y-2">
       <div class="flex justify-between text-xs text-gray-600">
-        <span>当前页: {{ task.currentPage }}</span>
+        <span>当前页: {{ task.currentPage }} / {{ task.maxPages || 50 }}</span>
         <span>总数据: {{ task.totalItems }} 条</span>
       </div>
-      <div class="w-full h-1.5 bg-gray-300 rounded-full overflow-hidden">
-        <div class="h-full bg-primary-500 rounded-full transition-all duration-500" :style="{ width: isRunning ? '75%' : '100%' }" />
+      <div class="w-full h-2 bg-gray-300 rounded-full overflow-hidden">
+        <div
+          class="h-full rounded-full transition-all duration-700"
+          :class="task.status === 'completed' ? 'bg-green-500' : 'bg-primary-500'"
+          :style="{ width: progressPercent + '%' }"
+        />
+      </div>
+      <div class="text-center text-xs text-gray-500">
+        {{ task.status === 'completed' ? '采集完成' : isPaused ? `已暂停 (${progressPercent}%)` : `采集中 ${progressPercent}%` }}
       </div>
     </div>
 
     <!-- Preview Table -->
     <div v-if="previewRows.length > 0" class="overflow-hidden border border-gray-200 rounded-lg">
       <div class="text-xs font-medium text-gray-500 px-3 py-2 bg-gray-50 border-b border-gray-200">
-        数据预览 (最新 5 条)
+        数据预览（共 {{ task.totalItems }} 条，展示最新 {{ previewRows.length }} 条）
       </div>
       <div class="overflow-x-auto">
         <table class="w-full text-xs">

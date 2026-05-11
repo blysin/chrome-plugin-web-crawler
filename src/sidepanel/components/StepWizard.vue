@@ -5,10 +5,9 @@ defineProps<{
 }>()
 
 const steps = [
-  { index: 1, label: 'AI 配置' },
-  { index: 2, label: '选取元素' },
-  { index: 3, label: '确认字段' },
-  { index: 4, label: '运行采集' },
+  { index: 1, label: '选取元素' },
+  { index: 2, label: '确认字段' },
+  { index: 3, label: '运行采集' },
 ]
 </script>
 

@@ -8,9 +8,10 @@
 // 4. Template cache management
 // ============================================================
 
-import { MessageType, type MessageEnvelope, type MessageRouter } from '@/shared/messages'
-import type { AiConfig, TaskState, ParseTemplate } from '@/shared/types'
-import { STORAGE_KEYS, AI_CONFIG as AI_CONSTANTS } from '@/shared/types'
+import {type MessageEnvelope, type MessageRouter, MessageType} from '@/shared/messages'
+import type {AiConfig, ParseTemplate, ScrapedRow, TaskState} from '@/shared/types'
+import {AI_CONFIG as AI_CONSTANTS, STORAGE_KEYS} from '@/shared/types'
+import {clearScrapedData, storeScrapedData} from '@/db'
 
 // --- State ---
 let aiConfig: AiConfig | null = null
@@ -20,7 +21,7 @@ const router: MessageRouter = new Map()
 
 // AI Config
 router.set(MessageType.SAVE_AI_CONFIG, async (payload) => {
-  const config = payload as AiConfig
+  const { config } = payload as { config: AiConfig }
   aiConfig = config
   await chrome.storage.local.set({ [STORAGE_KEYS.AI_CONFIG]: config })
   return { success: true }
@@ -46,35 +47,37 @@ router.set(MessageType.ANALYZE_HTML, async (payload) => {
 })
 
 // Forward messages from sidepanel to content script
-router.set(MessageType.START_SELECTOR_MODE, async (payload, sender) => {
+router.set(MessageType.START_SELECTOR_MODE, async (payload) => {
   return sendToContent(MessageType.START_SELECTOR_MODE, payload)
 })
 
-router.set(MessageType.STOP_SELECTOR_MODE, async (payload, sender) => {
+router.set(MessageType.STOP_SELECTOR_MODE, async (payload) => {
   return sendToContent(MessageType.STOP_SELECTOR_MODE, payload)
 })
 
-router.set(MessageType.DETECT_PAGINATION, async (payload, sender) => {
+router.set(MessageType.DETECT_PAGINATION, async (payload) => {
   return sendToContent(MessageType.DETECT_PAGINATION, payload)
 })
 
-router.set(MessageType.CONFIRM_PAGINATION, async (payload, sender) => {
+router.set(MessageType.CONFIRM_PAGINATION, async (payload) => {
   return sendToContent(MessageType.CONFIRM_PAGINATION, payload)
 })
 
-router.set(MessageType.START_SCRAPING, async (payload, sender) => {
+router.set(MessageType.START_SCRAPING, async (payload) => {
+  // Clear previous scrape data before starting new one
+  await clearScrapedData()
   return sendToContent(MessageType.START_SCRAPING, payload)
 })
 
-router.set(MessageType.PAUSE_SCRAPING, async (payload, sender) => {
+router.set(MessageType.PAUSE_SCRAPING, async (payload) => {
   return sendToContent(MessageType.PAUSE_SCRAPING, payload)
 })
 
-router.set(MessageType.RESUME_SCRAPING, async (payload, sender) => {
+router.set(MessageType.RESUME_SCRAPING, async (payload) => {
   return sendToContent(MessageType.RESUME_SCRAPING, payload)
 })
 
-router.set(MessageType.STOP_SCRAPING, async (payload, sender) => {
+router.set(MessageType.STOP_SCRAPING, async (payload) => {
   return sendToContent(MessageType.STOP_SCRAPING, payload)
 })
 
@@ -105,8 +108,7 @@ router.set(MessageType.GET_TASK_STATE, async () => {
 })
 
 router.set(MessageType.RESTORE_TASK, async () => {
-  const task = await getTaskState()
-  return task
+  return await getTaskState()
 })
 
 router.set(MessageType.RESET_TASK, async () => {
@@ -143,6 +145,15 @@ router.set(MessageType.DELETE_TEMPLATE, async (payload) => {
     [STORAGE_KEYS.TEMPLATES]: templates.filter((t) => t.id !== id),
   })
   return { success: true }
+})
+
+// Data Storage
+router.set(MessageType.STORE_SCRAPED_DATA, async (payload) => {
+  const { rows } = payload as { taskId: string; rows: ScrapedRow[] }
+  if (rows && rows.length > 0) {
+    await storeScrapedData(rows)
+  }
+  return { success: true, stored: rows?.length ?? 0 }
 })
 
 // Export
@@ -356,8 +367,8 @@ function forwardToSidePanel(type: MessageType, payload: unknown): void {
       target: 'sidepanel',
       payload,
     })
-    .catch(() => {
-      // Side panel may not be open - that's OK
+    .catch((err) => {
+      console.warn(`[forwardToSidePanel] Failed to send ${type}:`, err?.message)
     })
 }
 

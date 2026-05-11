@@ -12,8 +12,6 @@ import type {
   ScrapedRow,
   SelectorConfig,
   TaskState,
-  TaskStatus,
-  ParseTemplate,
 } from './types'
 
 // --- Message Envelope ---
@@ -70,6 +68,7 @@ export enum MessageType {
   RESET_TASK = 'RESET_TASK',
 
   // Data Management
+  STORE_SCRAPED_DATA = 'STORE_SCRAPED_DATA',
   GET_PREVIEW_DATA = 'GET_PREVIEW_DATA',
   PREVIEW_DATA = 'PREVIEW_DATA',
   EXPORT_CSV = 'EXPORT_CSV',

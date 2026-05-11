@@ -321,7 +321,7 @@ async function startScraping(msg: StartScrapingMsg): Promise<{ success: boolean 
 
   // Store data in IndexedDB via background
   chrome.runtime.sendMessage({
-    type: 'STORE_SCRAPED_DATA',
+    type: MessageType.STORE_SCRAPED_DATA,
     source: 'content',
     target: 'background',
     payload: { taskId, rows: allRows },
@@ -420,7 +420,7 @@ function getUniqueSelector(el: HTMLElement): string {
   let current: HTMLElement | null = el
   while (current && current !== document.body) {
     let segment = current.tagName.toLowerCase()
-    if (current.className && typeof current.className === 'string') {
+    if (current.className) {
       const cls = current.className.trim().split(/\s+/).slice(0, 2).join('.')
       if (cls) segment += `.${cls}`
     }

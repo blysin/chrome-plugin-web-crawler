@@ -22,11 +22,11 @@ function handleConfirm() {
 }
 
 function handleDetectPagination() {
-  // Must confirm fields before advancing to step 4
+  // Must confirm fields before advancing to step 3
   const enabled = fields.value.filter((f) => f.enabled)
   taskCtx.confirmFields(enabled, '', itemSelector.value)
   taskCtx.detectPagination().then(() => {
-    taskCtx.currentStep.index = 4
+    taskCtx.currentStep.index = 3
   })
 }
 </script>
