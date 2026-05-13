@@ -11,7 +11,7 @@
 import {type MessageEnvelope, type MessageRouter, MessageType} from '@/shared/messages'
 import type {AiConfig, ParseTemplate, ScrapedRow, TaskState} from '@/shared/types'
 import {AI_CONFIG as AI_CONSTANTS, STORAGE_KEYS} from '@/shared/types'
-import {clearScrapedData, storeScrapedData} from '@/db'
+import {storeScrapedData} from '@/db'
 
 // --- State ---
 let aiConfig: AiConfig | null = null
@@ -64,8 +64,6 @@ router.set(MessageType.CONFIRM_PAGINATION, async (payload) => {
 })
 
 router.set(MessageType.START_SCRAPING, async (payload) => {
-  // Clear previous scrape data before starting new one
-  await clearScrapedData()
   return sendToContent(MessageType.START_SCRAPING, payload)
 })
 
@@ -151,9 +149,10 @@ router.set(MessageType.DELETE_TEMPLATE, async (payload) => {
 router.set(MessageType.STORE_SCRAPED_DATA, async (payload) => {
   const { rows } = payload as { taskId: string; rows: ScrapedRow[] }
   if (rows && rows.length > 0) {
-    await storeScrapedData(rows)
+    const result = await storeScrapedData(rows)
+    return { success: true, stored: result.stored, skipped: result.skipped }
   }
-  return { success: true, stored: rows?.length ?? 0 }
+  return { success: true, stored: 0, skipped: 0 }
 })
 
 // Export

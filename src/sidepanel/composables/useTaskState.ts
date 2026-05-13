@@ -30,6 +30,9 @@ export function useTaskState() {
   const previewRows = reactive<ScrapedRow[]>([])
   const aiConfigLoaded = ref(false)
 
+  // Track skipped (already collected) items
+  const skippedTotal = ref(0)
+
   // Domain template prompt
   const showTemplatePrompt = ref(false)
   const matchedTemplates = ref<ParseTemplate[]>([])
@@ -58,9 +61,10 @@ export function useTaskState() {
 
   // --- Incoming message handlers ---
   on(MessageType.SCRAPING_PROGRESS, (payload) => {
-    const p = payload as { pageIndex: number; totalItems: number; latestRows: ScrapedRow[] }
+    const p = payload as { pageIndex: number; totalItems: number; skippedItems: number; latestRows: ScrapedRow[] }
     task.currentPage = p.pageIndex
     task.totalItems = p.totalItems
+    skippedTotal.value = p.skippedItems
     previewRows.splice(0, previewRows.length, ...p.latestRows)
   })
 
@@ -271,12 +275,14 @@ export function useTaskState() {
     previewRows.splice(0)
     analyzedFields.value = []
     analyzedItemSelector.value = ''
+    skippedTotal.value = 0
   }
 
   return {
     task,
     currentStep,
     previewRows,
+    skippedTotal,
     aiConfigLoaded,
     showTemplatePrompt,
     matchedTemplates,

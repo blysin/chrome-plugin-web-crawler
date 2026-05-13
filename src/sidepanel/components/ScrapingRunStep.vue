@@ -8,6 +8,7 @@ const props = defineProps<{
   isRunning: boolean
   isPaused: boolean
   canResume: boolean
+  skippedCount?: number
 }>()
 
 const emit = defineEmits<{

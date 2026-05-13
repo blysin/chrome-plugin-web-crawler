@@ -126,6 +126,7 @@ export interface ScrapingProgressPayload {
   pageIndex: number
   itemsOnPage: number
   totalItems: number
+  skippedItems: number
   latestRows: ScrapedRow[]
 }
 

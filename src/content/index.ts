@@ -228,7 +228,7 @@ async function detectPaginationCandidates(): Promise<{
   return { candidates }
 }
 
-// --- Scraping ---
+[{"_raw":"// Helper functions for persisting seen hashes across page navigations\nasync function loadSeenHashes(taskId: string): Promise<Set<string>> {\n  const key = `scraped_hashes_${taskId}`\n  const result = await chrome.storage.local.get(key)\n  const hashes = result[key]\n  if (Array.isArray(hashes)) {\n    return new Set(hashes)\n  }\n  return new Set()\n}\n\nasync function persistSeenHashes(taskId: string"},{"_raw":"hashes: Set<string>): Promise<void> {\n  const key = `scraped_hashes_${taskId}`\n  await chrome.storage.local.set({ [key]: Array.from(hashes) })\n}\n\nasync function clearSeenHashes(taskId: string): Promise<void> {\n  const key = `scraped_hashes_${taskId}`\n  await chrome.storage.local.remove(key)\n}\n\n// --- Scraping ---"}]
 interface StartScrapingMsg {
   taskId: string
   selectorConfig: SelectorConfig
@@ -243,9 +243,12 @@ async function startScraping(msg: StartScrapingMsg): Promise<{ success: boolean 
 
   const { taskId, selectorConfig, paginationConfig, pageDelayMs, maxPages = 50 } = msg
   const allRows: ScrapedRow[] = []
-  const seenHashes = new Set<string>()
+
+  // Restore previously persisted hashes so dedup survives page navigations
+  const seenHashes = await loadSeenHashes(taskId)
 
   let pageIndex = 0
+  let totalSkipped = 0
 
   const sendProgress = (pageIdx: number, itemsOnPage: number, latestRows: ScrapedRow[]) => {
     chrome.runtime.sendMessage({
@@ -257,6 +260,7 @@ async function startScraping(msg: StartScrapingMsg): Promise<{ success: boolean 
         pageIndex: pageIdx,
         itemsOnPage,
         totalItems: allRows.length,
+        skippedItems: totalSkipped,
         latestRows: latestRows.slice(-5),
       },
     })
@@ -267,16 +271,24 @@ async function startScraping(msg: StartScrapingMsg): Promise<{ success: boolean 
   try {
     while (scraperRunning && pageIndex < maxPages) {
       // Extract data from current page
-      const rows = extractData(selectorConfig)
+      const rows = extractData(selectorConfig, pageIndex)
       let newItems = 0
+      let pageSkipped = 0
 
       for (const row of rows) {
         if (!seenHashes.has(row.hash)) {
           seenHashes.add(row.hash)
           allRows.push(row)
           newItems++
+        } else {
+          pageSkipped++
         }
       }
+
+      totalSkipped += pageSkipped
+
+      // Persist hashes after each page so they survive navigation/reload
+      await persistSeenHashes(taskId, seenHashes)
 
       sendProgress(pageIndex, newItems, rows)
 
@@ -310,6 +322,7 @@ async function startScraping(msg: StartScrapingMsg): Promise<{ success: boolean 
 
   scraperRunning = false
 
+  // Clean up persisted hashes for this task on completion
   if (!hadError) {
     chrome.runtime.sendMessage({
       type: MessageType.SCRAPING_COMPLETE,
@@ -327,10 +340,13 @@ async function startScraping(msg: StartScrapingMsg): Promise<{ success: boolean 
     payload: { taskId, rows: allRows },
   })
 
+  // Clear persisted hashes after store
+  await clearSeenHashes(taskId)
+
   return { success: true }
 }
 
-function extractData(config: SelectorConfig): ScrapedRow[] {
+function extractData(config: SelectorConfig, currentPageIndex: number): ScrapedRow[] {
   const items = document.querySelectorAll(config.itemSelector)
   const rows: ScrapedRow[] = []
 
@@ -342,11 +358,24 @@ function extractData(config: SelectorConfig): ScrapedRow[] {
       const el = item.querySelector(field.selector)
       if (el) {
         const value = el.textContent?.trim() ?? ''
-        // Simple data cleaning
         data[field.name] = value.replace(/\s+/g, ' ').replace(/^[\s\u00A0]+|[\s\u00A0]+$/g, '')
       } else {
         data[field.name] = ''
       }
+    }
+
+    const hash = hashString(JSON.stringify(data))
+    rows.push({
+      id: generateId(),
+      data,
+      pageIndex: currentPageIndex,
+      hash,
+      scrapedAt: Date.now(),
+    })
+  }
+
+  return rows
+}
     }
 
     const hash = hashString(JSON.stringify(data))

@@ -26,17 +26,35 @@ function openDB(): Promise<IDBDatabase> {
   })
 }
 
-export async function storeScrapedData(rows: ScrapedRow[]): Promise<void> {
+export async function storeScrapedData(rows: ScrapedRow[]): Promise<{ stored: number; skipped: number }> {
   const db = await openDB()
   const tx = db.transaction(DB_CONFIG.STORES.SCRAPED_DATA, 'readwrite')
   const store = tx.objectStore(DB_CONFIG.STORES.SCRAPED_DATA)
 
+  // Collect all existing hashes first
+  const allExisting = await new Promise<ScrapedRow[]>((resolve, reject) => {
+    const req = store.getAll()
+    req.onsuccess = () => resolve(req.result as ScrapedRow[])
+    req.onerror = () => reject(req.error)
+  })
+
+  const existingHashes = new Set(allExisting.map((r) => r.hash))
+
+  let storedCount = 0
+  let skippedCount = 0
+
   for (const row of rows) {
+    if (existingHashes.has(row.hash)) {
+      skippedCount++
+      continue
+    }
+    existingHashes.add(row.hash)
     store.put(row)
+    storedCount++
   }
 
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve()
+  return new Promise<{ stored: number; skipped: number }>((resolve, reject) => {
+    tx.oncomplete = () => resolve({ stored: storedCount, skipped: skippedCount })
     tx.onerror = () => reject(tx.error)
   })
 }
