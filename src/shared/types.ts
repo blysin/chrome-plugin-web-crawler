@@ -36,6 +36,7 @@ export interface ScrapedRow {
   taskId: string
   data: Record<string, string>
   pageIndex: number
+  position: number
   hash: string
   scrapedAt: number
 }

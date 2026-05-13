@@ -467,6 +467,7 @@ function extractData(taskId: string, config: SelectorConfig, currentPageIndex: n
   const items = document.querySelectorAll(config.itemSelector)
   const rows: ScrapedRow[] = []
 
+  let position = 0
   for (const item of items) {
     const data: Record<string, string> = {}
     const enabledFields = config.fields.filter((f) => f.enabled)
@@ -487,6 +488,7 @@ function extractData(taskId: string, config: SelectorConfig, currentPageIndex: n
       taskId,
       data,
       pageIndex: currentPageIndex,
+      position: position++,
       hash,
       scrapedAt: Date.now(),
     })

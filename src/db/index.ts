@@ -152,6 +152,9 @@ export async function exportToCsv(taskId: string): Promise<string> {
 
   if (rows.length === 0) return ''
 
+  // Sort by pageIndex then position to preserve scraping order
+  rows.sort((a, b) => a.pageIndex - b.pageIndex || (a.position ?? 0) - (b.position ?? 0))
+
   const headers = Object.keys(rows[0].data)
   const csvRows = [headers.join(',')]
 
