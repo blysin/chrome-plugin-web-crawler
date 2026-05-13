@@ -30,6 +30,11 @@ next-env.d.ts
 *~
 .DS_Store
 
+# AI assistant tooling
+.claude/
+.omc/
+.sisyphus/
+
 # Logs
 npm-debug.log*
 yarn-debug.log*

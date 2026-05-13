@@ -11,11 +11,39 @@ function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_CONFIG.NAME, DB_CONFIG.VERSION)
 
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result
-      if (!db.objectStoreNames.contains(DB_CONFIG.STORES.SCRAPED_DATA)) {
-        db.createObjectStore(DB_CONFIG.STORES.SCRAPED_DATA, { keyPath: 'id' })
+      const oldVersion = event.oldVersion
+
+      // v1 → v2: add indices for taskId and hash
+      if (oldVersion < 2) {
+        // Ensure store exists (v1 base)
+        if (!db.objectStoreNames.contains(DB_CONFIG.STORES.SCRAPED_DATA)) {
+          const store = db.createObjectStore(DB_CONFIG.STORES.SCRAPED_DATA, { keyPath: 'id' })
+          store.createIndex('taskId', 'taskId', { unique: false })
+          store.createIndex('hash', 'hash', { unique: false })
+        } else {
+          // Store exists from v1, add missing indices
+          const tx = (event.target as IDBOpenDBRequest).transaction!
+          const store = tx.objectStore(DB_CONFIG.STORES.SCRAPED_DATA)
+          if (!store.indexNames.contains('taskId')) {
+            store.createIndex('taskId', 'taskId', { unique: false })
+          }
+          if (!store.indexNames.contains('hash')) {
+            store.createIndex('hash', 'hash', { unique: false })
+          }
+        }
       }
+
+      // Initial creation (fresh install)
+      if (oldVersion === 0) {
+        if (!db.objectStoreNames.contains(DB_CONFIG.STORES.SCRAPED_DATA)) {
+          const store = db.createObjectStore(DB_CONFIG.STORES.SCRAPED_DATA, { keyPath: 'id' })
+          store.createIndex('taskId', 'taskId', { unique: false })
+          store.createIndex('hash', 'hash', { unique: false })
+        }
+      }
+
       if (!db.objectStoreNames.contains(DB_CONFIG.STORES.TEMPLATES)) {
         db.createObjectStore(DB_CONFIG.STORES.TEMPLATES, { keyPath: 'id' })
       }
@@ -30,25 +58,23 @@ export async function storeScrapedData(rows: ScrapedRow[]): Promise<{ stored: nu
   const db = await openDB()
   const tx = db.transaction(DB_CONFIG.STORES.SCRAPED_DATA, 'readwrite')
   const store = tx.objectStore(DB_CONFIG.STORES.SCRAPED_DATA)
-
-  // Collect all existing hashes first
-  const allExisting = await new Promise<ScrapedRow[]>((resolve, reject) => {
-    const req = store.getAll()
-    req.onsuccess = () => resolve(req.result as ScrapedRow[])
-    req.onerror = () => reject(req.error)
-  })
-
-  const existingHashes = new Set(allExisting.map((r) => r.hash))
+  const hashIndex = store.index('hash')
 
   let storedCount = 0
   let skippedCount = 0
 
+  // Use index-based hash lookup instead of loading all data into memory
   for (const row of rows) {
-    if (existingHashes.has(row.hash)) {
+    const exists = await new Promise<boolean>((resolve, reject) => {
+      const req = hashIndex.count(IDBKeyRange.only(row.hash))
+      req.onsuccess = () => resolve(req.result > 0)
+      req.onerror = () => reject(req.error)
+    })
+
+    if (exists) {
       skippedCount++
       continue
     }
-    existingHashes.add(row.hash)
     store.put(row)
     storedCount++
   }
@@ -67,14 +93,33 @@ export async function getScrapedData(
   const db = await openDB()
   const tx = db.transaction(DB_CONFIG.STORES.SCRAPED_DATA, 'readonly')
   const store = tx.objectStore(DB_CONFIG.STORES.SCRAPED_DATA)
+  const taskIndex = store.index('taskId')
 
   return new Promise((resolve, reject) => {
-    const request = store.getAll()
-    request.onsuccess = () => {
-      const all = request.result as ScrapedRow[]
-      resolve(all.slice(offset, offset + limit))
+    const results: ScrapedRow[] = []
+    let cursorSkipped = 0
+    const range = IDBKeyRange.only(taskId)
+    const cursorReq = taskIndex.openCursor(range)
+    
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result
+      if (cursor) {
+        if (cursorSkipped < offset) {
+          cursorSkipped++
+        } else if (results.length < limit) {
+          results.push(cursor.value)
+        }
+        // Only continue if we haven't reached limit
+        if (results.length < limit) {
+          cursor.continue()
+        } else {
+          resolve(results)
+        }
+      } else {
+        resolve(results)
+      }
     }
-    request.onerror = () => reject(request.error)
+    cursorReq.onerror = () => reject(cursorReq.error)
   })
 }
 
@@ -112,8 +157,14 @@ export async function exportToCsv(taskId: string): Promise<string> {
 
   for (const row of rows) {
     const values = headers.map((h) => {
-      const val = row.data[h] ?? ''
-      return `"${val.replace(/"/g, '""')}"`
+      const val = (row.data[h] ?? '').toString()
+      // Escape double-quotes by doubling them (RFC 4180)
+      const escaped = val.replace(/"/g, '""')
+      // Quote fields containing commas, double-quotes, or newlines
+      if (/[",\n\r]/.test(val)) {
+        return `"${escaped}"`
+      }
+      return escaped
     })
     csvRows.push(values.join(','))
   }

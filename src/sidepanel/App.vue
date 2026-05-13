@@ -2,7 +2,7 @@
 import { ref, provide } from 'vue'
 import { useTaskState } from './composables/useTaskState'
 import StepWizard from './components/StepWizard.vue'
-import AiConfigPage from './components/AiConfigPage.vue'
+import AiConfigStep from './components/AiConfigStep.vue'
 import ElementSelectStep from './components/ElementSelectStep.vue'
 import FieldConfirmStep from './components/FieldConfirmStep.vue'
 import ScrapingRunStep from './components/ScrapingRunStep.vue'
@@ -56,7 +56,7 @@ function closeConfig() {
 
     <!-- Config Page -->
     <main v-if="showConfigPage" class="flex-1 px-4 pb-4 overflow-y-auto">
-      <AiConfigPage @close="closeConfig" />
+      <AiConfigStep mode="page" @close="closeConfig" />
     </main>
 
     <!-- Main Workflow -->
@@ -83,6 +83,7 @@ function closeConfig() {
             :is-running="isRunning"
             :is-paused="isPaused"
             :can-resume="canResume"
+            :skipped-count="taskCtx.skippedTotal"
             @start="taskCtx.startScraping"
             @pause="taskCtx.pauseScraping"
             @resume="taskCtx.resumeScraping"

@@ -20,6 +20,11 @@ let aiConfig: AiConfig | null = null
 const router: MessageRouter = new Map()
 
 // AI Config
+// NOTE: apiKey is stored in chrome.storage.local (unencrypted).
+// chrome.storage.session is NOT used because data must persist across
+// browser restarts. Any user with DevTools access can read this value.
+// For production deployments, consider using chrome.storage.session
+// (ephemeral) or the WebCrypto API for encryption.
 router.set(MessageType.SAVE_AI_CONFIG, async (payload) => {
   const { config } = payload as { config: AiConfig }
   aiConfig = config
@@ -103,10 +108,6 @@ router.set(MessageType.ELEMENT_SELECTED, async (payload) => {
 // Task State
 router.set(MessageType.GET_TASK_STATE, async () => {
   return getTaskState()
-})
-
-router.set(MessageType.RESTORE_TASK, async () => {
-  return await getTaskState()
 })
 
 router.set(MessageType.RESET_TASK, async () => {
@@ -269,7 +270,12 @@ async function testAiConnection(
         content: `Extract field names from this HTML. Return JSON: {"fields":[{"name":"field_name","sampleValue":"example"}]}\n\nHTML:\n${sampleHtml.substring(0, 5000)}`,
       },
     ])
-    const parsed = JSON.parse(result)
+    let parsed: { fields?: Array<{ name: string; sampleValue: string }> }
+    try {
+      parsed = JSON.parse(result)
+    } catch {
+      return { success: false, message: `AI 返回了非 JSON 格式的响应：${result.substring(0, 200)}` }
+    }
     return {
       success: true,
       message: `连接成功，检测到 ${parsed.fields?.length ?? 0} 个字段`,
@@ -319,7 +325,22 @@ ${html.substring(0, 30000)}`
   const result = await callAiApi(config, [{ role: 'user', content: prompt }], {
     type: 'json_object',
   })
-  const parsed = JSON.parse(result)
+  let parsed: { fields?: Array<{ name: string; description: string; sampleValue: string }>; itemSelector?: string }
+  try {
+    parsed = JSON.parse(result)
+  } catch {
+    // AI returned non-JSON — try to extract JSON from the response
+    const jsonMatch = result.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      try {
+        parsed = JSON.parse(jsonMatch[0])
+      } catch {
+        throw new Error(`AI 返回了无法解析的格式：${result.substring(0, 200)}`)
+      }
+    } else {
+      throw new Error(`AI 返回了非 JSON 格式的响应：${result.substring(0, 200)}`)
+    }
+  }
   return {
     fields: parsed.fields ?? [],
     itemSelector: parsed.itemSelector,

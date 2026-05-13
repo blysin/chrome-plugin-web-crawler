@@ -20,12 +20,64 @@ import type {
 } from '@/shared/types'
 import { PREPROCESSOR_CONFIG } from '@/shared/types'
 
+// --- HTML Preprocessing ---
+/**
+ * Strip noise tags and attributes from HTML to reduce AI token usage.
+ * Uses PREPROCESSOR_CONFIG settings for tag/attribute filtering.
+ */
+function preprocessHtml(html: string): string {
+  // Use DOM parser for safe tag stripping
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  
+  // Strip noise tags
+  for (const tag of PREPROCESSOR_CONFIG.STRIP_TAGS) {
+    doc.querySelectorAll(tag).forEach((el) => el.remove())
+  }
+  
+  // Strip noise attributes from remaining elements
+  const attrPatterns = PREPROCESSOR_CONFIG.STRIP_ATTRIBUTES
+  doc.querySelectorAll('*').forEach((el) => {
+    for (const attr of attrPatterns) {
+      if (attr === 'data-*') {
+        // Remove all data-* attributes
+        for (let i = el.attributes.length - 1; i >= 0; i--) {
+          if (el.attributes[i].name.startsWith('data-')) {
+            el.removeAttribute(el.attributes[i].name)
+          }
+        }
+      } else {
+        el.removeAttribute(attr)
+      }
+    }
+  })
+  
+  return doc.body?.innerHTML ?? html
+}
+
+// Helper: get cleaned HTML snippet from a container element
+function getContainerHtml(containerSelector?: string): string {
+  let html: string
+  if (containerSelector) {
+    const container = document.querySelector(containerSelector)
+    html = container?.outerHTML ?? document.body.outerHTML
+  } else {
+    html = document.body.outerHTML
+  }
+  return html.substring(0, PREPROCESSOR_CONFIG.MAX_HTML_SIZE)
+}
+
 // --- State ---
 let isSelectorMode = false
 let selectedElement: HTMLElement | null = null
 let highlightOverlay: HTMLElement | null = null
 let scraperRunning = false
 let scraperAbortController: AbortController | null = null
+// Track active scraping params so resume can restart the loop
+let activeScrapingMsg: StartScrapingMsg | null = null
+let activePageIndex = 0
+let activeTotalItems = 0
+let activeTotalSkipped = 0
+const SCRAPING_STATE_KEY = 'scraping_resume_state'
 
 // --- Message Listener ---
 chrome.runtime.onMessage.addListener(
@@ -62,11 +114,41 @@ async function handleMessage(type: MessageType, payload: unknown): Promise<unkno
 
     case MessageType.PAUSE_SCRAPING:
       scraperRunning = false
+      // Persist scraping state so resume can pick up where we left off
+      if (activeScrapingMsg) {
+        await chrome.storage.local.set({
+          [SCRAPING_STATE_KEY]: {
+            msg: activeScrapingMsg,
+            pageIndex: activePageIndex,
+            totalItems: activeTotalItems,
+            totalSkipped: activeTotalSkipped,
+          },
+        })
+      }
       return { success: true }
 
     case MessageType.RESUME_SCRAPING:
-      scraperRunning = true
-      return { success: true }
+      // Restore persisted scraping state and restart the loop
+      {
+        const saved = await chrome.storage.local.get(SCRAPING_STATE_KEY)
+        const state = saved[SCRAPING_STATE_KEY]
+        if (state?.msg) {
+          // Clear saved state so we don't accidentally resume twice
+          await chrome.storage.local.remove(SCRAPING_STATE_KEY)
+          // Restart from saved page (seenHashes in storage will skip dupes)
+          const msg: StartScrapingMsg = {
+            ...state.msg,
+            resumeFromPage: state.pageIndex,
+            resumeTotalItems: state.totalItems,
+          }
+          // Fire and forget - the loop will post progress/completion messages
+          startScraping(msg).catch((err) => {
+            console.error('[ResumeScraping] Failed:', err)
+          })
+          return { success: true }
+        }
+        return { success: false, error: 'No saved state to resume from' }
+      }
 
     case MessageType.STOP_SCRAPING:
       scraperRunning = false
@@ -228,26 +310,55 @@ async function detectPaginationCandidates(): Promise<{
   return { candidates }
 }
 
-[{"_raw":"// Helper functions for persisting seen hashes across page navigations\nasync function loadSeenHashes(taskId: string): Promise<Set<string>> {\n  const key = `scraped_hashes_${taskId}`\n  const result = await chrome.storage.local.get(key)\n  const hashes = result[key]\n  if (Array.isArray(hashes)) {\n    return new Set(hashes)\n  }\n  return new Set()\n}\n\nasync function persistSeenHashes(taskId: string"},{"_raw":"hashes: Set<string>): Promise<void> {\n  const key = `scraped_hashes_${taskId}`\n  await chrome.storage.local.set({ [key]: Array.from(hashes) })\n}\n\nasync function clearSeenHashes(taskId: string): Promise<void> {\n  const key = `scraped_hashes_${taskId}`\n  await chrome.storage.local.remove(key)\n}\n\n// --- Scraping ---"}]
+// Helper functions for persisting seen hashes across page navigations
+async function loadSeenHashes(taskId: string): Promise<Set<string>> {
+  const key = `scraped_hashes_${taskId}`
+  const result = await chrome.storage.local.get(key)
+  const hashes = result[key]
+  if (Array.isArray(hashes)) {
+    return new Set(hashes)
+  }
+  return new Set()
+}
+
+async function persistSeenHashes(taskId: string, hashes: Set<string>): Promise<void> {
+  const key = `scraped_hashes_${taskId}`
+  await chrome.storage.local.set({ [key]: Array.from(hashes) })
+}
+
+async function clearSeenHashes(taskId: string): Promise<void> {
+  const key = `scraped_hashes_${taskId}`
+  await chrome.storage.local.remove(key)
+}
+
+// --- Scraping ---
 interface StartScrapingMsg {
   taskId: string
   selectorConfig: SelectorConfig
   paginationConfig: PaginationConfig
   pageDelayMs: number
   maxPages?: number
+  resumeFromPage?: number
+  resumeTotalItems?: number
 }
 
 async function startScraping(msg: StartScrapingMsg): Promise<{ success: boolean }> {
   scraperAbortController = new AbortController()
   scraperRunning = true
 
-  const { taskId, selectorConfig, paginationConfig, pageDelayMs, maxPages = 50 } = msg
+  const { taskId, selectorConfig, paginationConfig, pageDelayMs, maxPages = 50, resumeFromPage, resumeTotalItems } = msg
+
+  // Track active params for pause/resume
+  activeScrapingMsg = msg
+  activePageIndex = resumeFromPage ?? 0
+  activeTotalItems = resumeTotalItems ?? 0
+
   const allRows: ScrapedRow[] = []
 
   // Restore previously persisted hashes so dedup survives page navigations
   const seenHashes = await loadSeenHashes(taskId)
 
-  let pageIndex = 0
+  let pageIndex = resumeFromPage ?? 0
   let totalSkipped = 0
 
   const sendProgress = (pageIdx: number, itemsOnPage: number, latestRows: ScrapedRow[]) => {
@@ -271,7 +382,7 @@ async function startScraping(msg: StartScrapingMsg): Promise<{ success: boolean 
   try {
     while (scraperRunning && pageIndex < maxPages) {
       // Extract data from current page
-      const rows = extractData(selectorConfig, pageIndex)
+      const rows = extractData(taskId, selectorConfig, pageIndex)
       let newItems = 0
       let pageSkipped = 0
 
@@ -286,9 +397,13 @@ async function startScraping(msg: StartScrapingMsg): Promise<{ success: boolean 
       }
 
       totalSkipped += pageSkipped
+      activeTotalSkipped = totalSkipped
 
       // Persist hashes after each page so they survive navigation/reload
       await persistSeenHashes(taskId, seenHashes)
+
+      // Update active state for pause/resume tracking
+      activeTotalItems = (resumeTotalItems ?? 0) + allRows.length
 
       sendProgress(pageIndex, newItems, rows)
 
@@ -302,6 +417,7 @@ async function startScraping(msg: StartScrapingMsg): Promise<{ success: boolean 
       if (!hasNext) break
 
       pageIndex++
+      activePageIndex = pageIndex
     }
   } catch (err) {
     hadError = true
@@ -321,6 +437,7 @@ async function startScraping(msg: StartScrapingMsg): Promise<{ success: boolean 
   }
 
   scraperRunning = false
+  activeScrapingMsg = null
 
   // Clean up persisted hashes for this task on completion
   if (!hadError) {
@@ -346,7 +463,7 @@ async function startScraping(msg: StartScrapingMsg): Promise<{ success: boolean 
   return { success: true }
 }
 
-function extractData(config: SelectorConfig, currentPageIndex: number): ScrapedRow[] {
+function extractData(taskId: string, config: SelectorConfig, currentPageIndex: number): ScrapedRow[] {
   const items = document.querySelectorAll(config.itemSelector)
   const rows: ScrapedRow[] = []
 
@@ -367,22 +484,9 @@ function extractData(config: SelectorConfig, currentPageIndex: number): ScrapedR
     const hash = hashString(JSON.stringify(data))
     rows.push({
       id: generateId(),
+      taskId,
       data,
       pageIndex: currentPageIndex,
-      hash,
-      scrapedAt: Date.now(),
-    })
-  }
-
-  return rows
-}
-    }
-
-    const hash = hashString(JSON.stringify(data))
-    rows.push({
-      id: generateId(),
-      data,
-      pageIndex: 0,
       hash,
       scrapedAt: Date.now(),
     })
@@ -453,20 +557,30 @@ function getUniqueSelector(el: HTMLElement): string {
       const cls = current.className.trim().split(/\s+/).slice(0, 2).join('.')
       if (cls) segment += `.${cls}`
     }
+    // Add nth-child for better uniqueness when siblings share the same tag
+    const parent = current.parentElement
+    if (parent) {
+      const sameTagSiblings = Array.from(parent.children).filter(
+        (c) => c.tagName === current!.tagName
+      )
+      if (sameTagSiblings.length > 1) {
+        const index = sameTagSiblings.indexOf(current) + 1
+        segment += `:nth-child(${index})`
+      }
+    }
     path.unshift(segment)
-    current = current.parentElement
+    current = parent
   }
   return path.join(' > ')
 }
 
 function hashString(str: string): string {
-  let hash = 0
+  // djb2 with 53-bit modulus — far lower collision rate than 32-bit
+  let hash = 5381
   for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i)
-    hash = (hash << 5) - hash + char
-    hash |= 0
+    hash = ((hash << 5) + hash + str.charCodeAt(i)) % 9007199254740991
   }
-  return String(hash)
+  return hash.toString(36)
 }
 
 function generateId(): string {

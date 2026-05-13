@@ -33,6 +33,7 @@ export interface ParseTemplate {
 // --- Scraped Data Row ---
 export interface ScrapedRow {
   id: string
+  taskId: string
   data: Record<string, string>
   pageIndex: number
   hash: string
@@ -111,7 +112,7 @@ export const STORAGE_KEYS = {
 // --- IndexedDB ---
 export const DB_CONFIG = {
   NAME: 'CrawlerDB',
-  VERSION: 1,
+  VERSION: 2,
   STORES: {
     SCRAPED_DATA: 'scrapedData',
     TEMPLATES: 'templates',
